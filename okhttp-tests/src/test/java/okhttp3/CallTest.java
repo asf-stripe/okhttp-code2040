@@ -431,24 +431,6 @@ public final class CallTest {
         .assertBody("Success!");
   }
 
-  @Test public void doesNotAttemptAuthorization21Times() throws Exception {
-    for (int i = 0; i < 21; i++) {
-      server.enqueue(new MockResponse().setResponseCode(401));
-    }
-
-    String credential = Credentials.basic("jesse", "secret");
-    client = client.newBuilder()
-        .authenticator(new RecordingOkAuthenticator(credential))
-        .build();
-
-    try {
-      client.newCall(new Request.Builder().url(server.url("/0")).build()).execute();
-      fail();
-    } catch (IOException expected) {
-      assertEquals("Too many follow-up requests: 21", expected.getMessage());
-    }
-  }
-
   @Test public void delete() throws Exception {
     server.enqueue(new MockResponse().setBody("abc"));
 
@@ -1030,6 +1012,18 @@ public final class CallTest {
     noRecoverWhenRetryOnConnectionFailureIsFalse();
   }
 
+  @Test public void tlsHandshakeFailure_noFallbackByDefault() throws Exception {
+    server.useHttps(sslClient.socketFactory, false);
+    server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
+    server.enqueue(new MockResponse().setBody("response that will never be received"));
+    RecordedResponse response = executeSynchronously("/");
+    response.assertFailure(
+            SSLProtocolException.class, // RI response to the FAIL_HANDSHAKE
+            SSLHandshakeException.class // Android's response to the FAIL_HANDSHAKE
+    );
+    assertFalse(client.connectionSpecs().contains(ConnectionSpec.COMPATIBLE_TLS));
+  }
+
   @Test public void recoverFromTlsHandshakeFailure() throws Exception {
     server.useHttps(sslClient.socketFactory, false);
     server.enqueue(new MockResponse().setSocketPolicy(SocketPolicy.FAIL_HANDSHAKE));
@@ -1038,6 +1032,8 @@ public final class CallTest {
     client = client.newBuilder()
         .hostnameVerifier(new RecordingHostnameVerifier())
         .dns(new SingleInetAddressDns())
+        // opt-in to fallback to COMPATIBLE_TLS
+        .connectionSpecs(Arrays.asList(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
         .sslSocketFactory(suppressTlsFallbackClientSocketFactory(), sslClient.trustManager)
         .build();
 
@@ -1060,6 +1056,8 @@ public final class CallTest {
         new RecordingSSLSocketFactory(sslClient.socketFactory);
     client = client.newBuilder()
         .sslSocketFactory(clientSocketFactory, sslClient.trustManager)
+        // opt-in to fallback to COMPATIBLE_TLS
+        .connectionSpecs(Arrays.asList(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
         .hostnameVerifier(new RecordingHostnameVerifier())
         .dns(new SingleInetAddressDns())
         .build();
@@ -1085,6 +1083,7 @@ public final class CallTest {
 
     client = client.newBuilder()
         .hostnameVerifier(new RecordingHostnameVerifier())
+        .connectionSpecs(Arrays.asList(ConnectionSpec.MODERN_TLS, ConnectionSpec.COMPATIBLE_TLS))
         .sslSocketFactory(suppressTlsFallbackClientSocketFactory(), sslClient.trustManager)
         .build();
 
@@ -1763,35 +1762,6 @@ public final class CallTest {
     callback.await(server.url("/0"))
         .assertCode(200)
         .assertBody("Success!");
-  }
-
-  @Test public void doesNotFollow21Redirects() throws Exception {
-    for (int i = 0; i < 21; i++) {
-      server.enqueue(new MockResponse()
-          .setResponseCode(301)
-          .addHeader("Location: /" + (i + 1))
-          .setBody("Redirecting to /" + (i + 1)));
-    }
-
-    try {
-      client.newCall(new Request.Builder().url(server.url("/0")).build()).execute();
-      fail();
-    } catch (IOException expected) {
-      assertEquals("Too many follow-up requests: 21", expected.getMessage());
-    }
-  }
-
-  @Test public void doesNotFollow21Redirects_Async() throws Exception {
-    for (int i = 0; i < 21; i++) {
-      server.enqueue(new MockResponse()
-          .setResponseCode(301)
-          .addHeader("Location: /" + (i + 1))
-          .setBody("Redirecting to /" + (i + 1)));
-    }
-
-    Request request = new Request.Builder().url(server.url("/0")).build();
-    client.newCall(request).enqueue(callback);
-    callback.await(server.url("/0")).assertFailure("Too many follow-up requests: 21");
   }
 
   @Test public void http204WithBodyDisallowed() throws IOException {
@@ -2516,33 +2486,6 @@ public final class CallTest {
 
     // GET reuses the connection from the second connect.
     assertEquals(1, server.takeRequest().getSequenceNumber());
-  }
-
-  @Test public void tooManyProxyAuthFailuresWithConnectionClose() throws IOException {
-    server.useHttps(sslClient.socketFactory, true);
-    server.setProtocols(Collections.singletonList(Protocol.HTTP_1_1));
-    for (int i = 0; i < 21; i++) {
-      server.enqueue(new MockResponse()
-          .setResponseCode(407)
-          .addHeader("Proxy-Authenticate: Basic realm=\"localhost\"")
-          .addHeader("Connection: close"));
-    }
-
-    client = client.newBuilder()
-        .sslSocketFactory(sslClient.socketFactory, sslClient.trustManager)
-        .proxy(server.toProxyAddress())
-        .proxyAuthenticator(new RecordingOkAuthenticator("password"))
-        .hostnameVerifier(new RecordingHostnameVerifier())
-        .build();
-
-    Request request = new Request.Builder()
-        .url("https://android.com/foo")
-        .build();
-    try {
-      client.newCall(request).execute();
-      fail();
-    } catch (ProtocolException expected) {
-    }
   }
 
   /**
