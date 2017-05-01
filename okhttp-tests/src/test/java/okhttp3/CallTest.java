@@ -1764,6 +1764,20 @@ public final class CallTest {
         .assertBody("Success!");
   }
 
+  @Test public void doesNotFollow21Redirects() throws Exception {
+    for (int i = 0; i < 21; i++) {
+      server.enqueue(new MockResponse()
+          .setResponseCode(301)
+          .addHeader("Location: /" + (i + 1))
+          .setBody("Redirecting to /" + (i + 1)));
+    }
+    server.enqueue(new MockResponse().setBody("darn"));
+
+    RecordedResponse r = executeSynchronously("/0");
+    assertNull(r.body);
+    assertEquals(ProtocolException.class, r.failure.getClass());
+  }
+
   @Test public void http204WithBodyDisallowed() throws IOException {
     server.enqueue(new MockResponse()
         .setResponseCode(204)
